@@ -149,7 +149,7 @@ object IvyRetrieve {
     confReport.getEvictedNodes.map(node => toModuleID(node.getId))
 
   def toModuleID(revID: ModuleRevisionId): ModuleID =
-    ModuleID(revID.getOrganisation, revID.getName, revID.getRevision, extraAttributes = IvySbt.getExtraAttributes(revID))
+    ModuleID.cached(revID.getOrganisation, revID.getName, revID.getRevision, extraAttributes = IvySbt.getExtraAttributes(revID))
 
   def toArtifact(art: IvyArtifact): Artifact =
     {

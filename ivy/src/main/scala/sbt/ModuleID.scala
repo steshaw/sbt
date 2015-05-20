@@ -3,7 +3,9 @@
  */
 package sbt
 
+import java.lang.ref.{ WeakReference, Reference }
 import java.net.URL
+import java.util
 
 import sbt.mavenint.SbtPomExtraProperties
 import sbt.serialization._
@@ -125,4 +127,59 @@ object ModuleID {
   /** Prefixes all keys with `e:` if they are not already so prefixed. */
   def checkE(attributes: Seq[(String, String)]) =
     for ((key, value) <- attributes) yield if (key.startsWith("e:")) (key, value) else ("e:" + key, value)
+
+  def cached(organization: String, name: String, revision: String, extraAttributes: Map[String, String]): ModuleID = {
+    ModuleIDCache.lookUp(organization, name, revision, extraAttributes)
+  }
+
+  // NOTE: We use this to limit explosions in memory usage when generating the UpdateReport, so we can re-use
+  // module id instances.
+  // This is currently a locked cache which grows unbounded, but uses weak references that may be cleaned up.
+  // This may be putting MORE pressure on the GC, rather than relieving memory pressure, but we hope
+  // that's not the case.
+  private[sbt] object ModuleIDCache
+      extends java.util.WeakHashMap[ModuleIDKey, Reference[ModuleID]](20000) {
+
+    def lookUp(organization: String, name: String, revision: String, extraAttributes: Map[String, String]): ModuleID = synchronized {
+      def makeNew = ModuleID(organization = organization, name = name, revision = revision, extraAttributes = extraAttributes)
+      val hash = new ModuleIDKey(organization, name, revision, extraAttributes)
+      get(hash) match {
+        case x if x != null && x.get != null => x.get
+        case _ =>
+          val module = makeNew
+          System.err.println(s"Caching $module ...")
+          put(hash, new WeakReference(module))
+          module
+      }
+    }
+
+    // Clean oldest entry if our size is low.
+    //override protected def removeEldestEntry(e: java.util.Map.Entry[ModuleIDKey, Reference[ModuleID]]): Boolean = {
+    //  (size() > cacheSize) || (e.getValue.get() == null)
+    //}
+
+  }
+  // This class is used to compute an efficient hash + equals implementation for the most commonly constructed ModuleID (one which is
+  // empty of any dependnecy descriptor information, but we use all the time in sbt).
+  private[sbt] class ModuleIDKey(val organization: String, val name: String, val revision: String, val extraAttributes: Map[String, String]) {
+    override def equals(other: Any): Boolean = other match {
+      case null                        => false
+      case o: AnyRef if o eq this      => true
+      case o if o.hashCode != hashCode => false
+      case x: ModuleIDKey =>
+        (x.organization == organization) &&
+          (x.name == name) &&
+          (x.revision == revision) &&
+          (x.extraAttributes == extraAttributes)
+      case _ => false
+    }
+    override val hashCode: Int = {
+      var hash = scala.util.hashing.MurmurHash3.stringHash(organization)
+      hash = hash * 31 + scala.util.hashing.MurmurHash3.stringHash(name)
+      hash = hash * 31 + scala.util.hashing.MurmurHash3.stringHash(revision)
+      hash = hash * 31 + scala.util.hashing.MurmurHash3.orderedHash(extraAttributes)
+      hash
+    }
+  }
 }
+
